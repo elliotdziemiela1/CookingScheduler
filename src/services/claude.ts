@@ -38,9 +38,9 @@ IMPORTANT: You MUST respond with ONLY a valid JSON object (no markdown, no expla
 Sort steps chronologically by time. Use 12-hour time format (e.g., "3:45 PM").`;
 
 function getApiKey(): string {
-  const key = import.meta.env.VITE_ANTHROPIC_API_KEY;
+  const key = import.meta.env.CLAUDE_KEY_API;
   if (!key || key === 'your-api-key-here') {
-    throw new Error('Please set your VITE_ANTHROPIC_API_KEY in the .env file');
+    throw new Error('Please set your CLAUDE_KEY_API in the .env file');
   }
   return key;
 }
