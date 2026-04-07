@@ -103,8 +103,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const hasUrls = recipes.some((r) => !r.manualContent);
 
     const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 4096,
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8192,
       system: SYSTEM_PROMPT,
       tools: hasUrls
         ? [{ type: 'web_fetch_20260309' as const, name: 'web_fetch', max_uses: 10 }]
