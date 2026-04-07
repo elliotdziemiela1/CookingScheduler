@@ -3,7 +3,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const SYSTEM_PROMPT = `You are an expert professional chef and kitchen coordinator. Your job is to create a perfectly timed cooking schedule that coordinates multiple recipes so all dishes are hot and ready at exactly the specified finish time.
 
-Given the recipe content provided, extract from each recipe:
+For each recipe URL provided, use the web_fetch tool to retrieve the recipe page and extract:
 - Recipe name
 - Total prep time and cook time
 - Individual steps with estimated durations
@@ -50,48 +50,7 @@ interface RequestBody {
   helperCount: number;
 }
 
-async function fetchRecipeContent(url: string): Promise<string> {
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(10000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status}`);
-  }
-
-  const html = await response.text();
-
-  // Strip HTML tags to get plain text, then truncate to avoid huge prompts
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
-    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
-    .replace(/<header[\s\S]*?<\/header>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#\d+;/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  // Truncate to ~15k chars to keep the prompt manageable
-  return text.slice(0, 15000);
-}
-
-function buildUserMessage(
-  recipes: { url: string; content: string; error?: string }[],
-  finishTime: string,
-  helperCount: number,
-): string {
+function buildUserMessage(recipes: Recipe[], finishTime: string, helperCount: number): string {
   const finishDate = new Date(finishTime);
   const timeStr = finishDate.toLocaleTimeString('en-US', {
     hour: 'numeric',
@@ -106,12 +65,12 @@ function buildUserMessage(
 
   const recipeList = recipes
     .map((r, i) => {
-      if (r.error) {
-        return `${i + 1}. [Could not fetch: ${r.url} — ${r.error}]`;
+      if (r.manualContent) {
+        return `${i + 1}. Recipe (provided manually):\n${r.manualContent}`;
       }
-      return `${i + 1}. Recipe from ${r.url}:\n${r.content}`;
+      return `${i + 1}. ${r.url}`;
     })
-    .join('\n\n');
+    .join('\n');
 
   return `I need to prepare the following recipes, all to be ready at exactly ${timeStr} on ${dateStr}:
 
@@ -119,7 +78,7 @@ ${recipeList}
 
 I have ${helperCount} ${helperCount === 1 ? 'person' : 'people'} available to cook.
 
-Analyze the recipe steps and create a coordinated cooking schedule. Remember to respond with ONLY the JSON object.`;
+Please fetch each recipe URL, analyze the steps, and create a coordinated cooking schedule. Remember to respond with ONLY the JSON object.`;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -139,37 +98,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Fetch all recipe pages in parallel on the server
-    const fetchedRecipes = await Promise.all(
-      recipes.map(async (r) => {
-        if (r.manualContent) {
-          return { url: r.url, content: r.manualContent };
-        }
-        try {
-          const content = await fetchRecipeContent(r.url);
-          return { url: r.url, content };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Unknown error';
-          return { url: r.url, content: '', error: msg };
-        }
-      }),
-    );
-
-    const allFailed = fetchedRecipes.every((r) => r.error);
-    if (allFailed) {
-      const errors = fetchedRecipes.map((r) => `${r.url}: ${r.error}`).join('; ');
-      return res.status(400).json({
-        error: `Could not fetch any recipe URLs. Errors: ${errors}`,
-      });
-    }
-
     const client = new Anthropic({ apiKey });
 
+    const hasUrls = recipes.some((r) => !r.manualContent);
+
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 4096,
       system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: buildUserMessage(fetchedRecipes, finishTime, helperCount) }],
+      tools: hasUrls
+        ? [{ type: 'web_fetch_20260309' as const, name: 'web_fetch', max_uses: 10 }]
+        : [],
+      messages: [{ role: 'user', content: buildUserMessage(recipes, finishTime, helperCount) }],
     });
 
     // Extract text from the response
